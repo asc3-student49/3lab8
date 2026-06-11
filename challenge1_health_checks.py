@@ -6,7 +6,9 @@ Comprehensive health checks for all dependencies
 from typing import Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
+import asyncio
 import logging
+import time
 from lifecycle_manager import ManagedDependencies
 
 logger = logging.getLogger(__name__)
@@ -47,7 +49,29 @@ class HealthChecker:
         Returns:
             Health check result
         """
-        # YOUR CODE HERE
+        start = time.time()
+
+        try:
+            await self.dependencies.database.query("SELECT 1")
+            latency = (time.time() - start) * 1000
+
+            return HealthCheckResult(
+                healthy=True,
+                message="Database healthy",
+                latency_ms=round(latency, 2),
+                timestamp=datetime.now(),
+            )
+
+        except Exception as e:
+            latency = (time.time() - start) * 1000
+            logger.error(f"Database health check failed: {e}")
+
+            return HealthCheckResult(
+                healthy=False,
+                message=f"Database error: {str(e)[:100]}",
+                latency_ms=round(latency, 2),
+                timestamp=datetime.now(),
+            )
 
     async def check_cache(self) -> HealthCheckResult:
         """
@@ -58,7 +82,43 @@ class HealthChecker:
         Returns:
             Health check result
         """
-        # YOUR CODE HERE
+        start = time.time()
+        sentinel_key = "_health_check_sentinel"
+        sentinel_value = f"ok-{int(start * 1000)}"
+
+        try:
+            await self.dependencies.cache.set(sentinel_key, sentinel_value, ttl=5)
+            round_trip = await self.dependencies.cache.get(sentinel_key)
+            latency = (time.time() - start) * 1000
+
+            if round_trip != sentinel_value:
+                return HealthCheckResult(
+                    healthy=False,
+                    message=(
+                        "Cache round-trip mismatch: "
+                        f"expected={sentinel_value}, got={round_trip}"
+                    )[:100],
+                    latency_ms=round(latency, 2),
+                    timestamp=datetime.now(),
+                )
+
+            return HealthCheckResult(
+                healthy=True,
+                message="Cache healthy",
+                latency_ms=round(latency, 2),
+                timestamp=datetime.now(),
+            )
+
+        except Exception as e:
+            latency = (time.time() - start) * 1000
+            logger.error(f"Cache health check failed: {e}")
+
+            return HealthCheckResult(
+                healthy=False,
+                message=f"Cache error: {str(e)[:100]}",
+                latency_ms=round(latency, 2),
+                timestamp=datetime.now(),
+            )
 
     async def check_http_client(self) -> HealthCheckResult:
         """
@@ -69,8 +129,6 @@ class HealthChecker:
         Returns:
             Health check result
         """
-        import time
-
         start = time.time()
 
         try:
@@ -110,7 +168,28 @@ class HealthChecker:
         Returns:
             Dictionary mapping dependency name to health check result
         """
-        # YOUR CODE HERE
+        database_result, cache_result, http_result = await asyncio.gather(
+            self.check_database(),
+            self.check_cache(),
+            self.check_http_client(),
+        )
+
+        results = {
+            "database": database_result,
+            "cache": cache_result,
+            "http": http_result,
+        }
+
+        for name, result in results.items():
+            logger.info(
+                "Health check %s: healthy=%s latency_ms=%.2f message=%s",
+                name,
+                result.healthy,
+                result.latency_ms,
+                result.message,
+            )
+
+        return results
 
     def get_overall_status(self, results: Dict[str, HealthCheckResult]) -> str:
         """
@@ -139,7 +218,33 @@ class HealthChecker:
         Returns:
             Health report dictionary
         """
-        # YOUR CODE HERE
+        results = await self.check_all()
+        status = self.get_overall_status(results)
+
+        checks = {
+            name: {
+                "healthy": result.healthy,
+                "message": result.message,
+                "latency_ms": result.latency_ms,
+                "timestamp": result.timestamp.isoformat(),
+            }
+            for name, result in results.items()
+        }
+
+        total_checks = len(results)
+        healthy_checks = sum(1 for result in results.values() if result.healthy)
+        unhealthy_checks = total_checks - healthy_checks
+
+        return {
+            "status": status,
+            "timestamp": datetime.now().isoformat(),
+            "checks": checks,
+            "summary": {
+                "total": total_checks,
+                "healthy": healthy_checks,
+                "unhealthy": unhealthy_checks,
+            },
+        }
 
 
 # Example usage with FastAPI
