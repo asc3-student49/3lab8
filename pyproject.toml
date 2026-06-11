@@ -5,6 +5,8 @@ description = "Dependency lifecycle management and configuration"
 requires-python = ">=3.11"
 
 dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
     "pydantic-ai>=1.77.0",
     "pydantic-settings>=2.7.0",
     "python-dotenv>=1.0.1",
