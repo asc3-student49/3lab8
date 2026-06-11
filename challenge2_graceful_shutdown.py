@@ -6,7 +6,7 @@ Graceful shutdown with timeout for in-flight requests
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Awaitable, Callable, Optional
 from datetime import datetime
 from lifecycle_manager import LifecycleManager
 
@@ -90,7 +90,33 @@ class GracefulShutdownManager:
         3. If timeout expires, force shutdown
         4. Clean up all dependencies
         """
-        # YOUR CODE HERE
+        if self._shutdown_complete:
+            logger.info("Shutdown already complete, skipping")
+            return
+
+        logger.info("=" * 60)
+        logger.info("GRACEFUL SHUTDOWN STARTED")
+        logger.info("=" * 60)
+
+        async with self._lock:
+            self._shutdown_initiated = True
+            active_requests = self._active_requests
+
+        if active_requests > 0:
+            logger.info(
+                "Shutdown initiated with %s in-flight request(s)", active_requests
+            )
+            await self._wait_for_requests()
+        else:
+            logger.info("No in-flight requests, proceeding to lifecycle shutdown")
+
+        await self.lifecycle_manager.shutdown()
+
+        self._shutdown_complete = True
+        logger.info("Graceful shutdown completed at %s", datetime.now().isoformat())
+        logger.info("=" * 60)
+        logger.info("GRACEFUL SHUTDOWN FINISHED")
+        logger.info("=" * 60)
 
     async def _wait_for_requests(self):
         """
@@ -99,23 +125,51 @@ class GracefulShutdownManager:
         Polls active request counter and waits up to grace period.
         If grace period expires, logs warning and proceeds.
         """
-        # YOUR CODE HERE
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + self.config.grace_period_seconds
 
-    async def handle_request(self, request_handler):
+        while True:
+            async with self._lock:
+                active_requests = self._active_requests
+
+            if active_requests == 0:
+                logger.info("All in-flight requests completed within grace period")
+                break
+
+            now = loop.time()
+            if now >= deadline:
+                logger.warning(
+                    "Grace period expired with %s active request(s); forcing shutdown",
+                    active_requests,
+                )
+                break
+
+            remaining = deadline - now
+            logger.info(
+                "Waiting for %s active request(s) to complete (%.2fs remaining)",
+                active_requests,
+                remaining,
+            )
+            await asyncio.sleep(self.config.polling_interval_seconds)
+
+    async def handle_request(self, request_handler: Callable[[], Awaitable[Any]]):
         """
-        Context manager for handling requests with tracking.
+        Run a request handler while automatically tracking active requests.
 
         Usage:
-            async with shutdown_manager.handle_request(handler):
-                result = await handler()
+            result = await shutdown_manager.handle_request(handler)
 
         Args:
-            request_handler: Async function to handle request
+            request_handler: Zero-argument async callable
 
         Raises:
             RuntimeError: If shutdown is in progress
         """
-        # YOUR CODE HERE
+        await self.increment_active_requests()
+        try:
+            return await request_handler()
+        finally:
+            await self.decrement_active_requests()
 
 
 # Example usage with FastAPI
@@ -188,9 +242,56 @@ def create_app_with_graceful_shutdown():
 async def example_graceful_shutdown():
     """Example showing graceful shutdown with active requests."""
     from lifecycle_manager import LifecycleManager
+    from config import Settings
 
-    # YOUR CODE HERE
-    pass
+    settings = Settings(openai_api_key="demo-key", environment="development")
+    lifecycle_manager = LifecycleManager(settings)
+    await lifecycle_manager.initialize()
+
+    shutdown_manager = GracefulShutdownManager(
+        lifecycle_manager,
+        ShutdownConfig(
+            grace_period_seconds=3.0,
+            polling_interval_seconds=0.5,
+        ),
+    )
+
+    def make_request_handler(name: str, duration: float) -> Callable[[], Awaitable[str]]:
+        async def _handler() -> str:
+            logger.info("Request %s started (duration=%.1fs)", name, duration)
+            await asyncio.sleep(duration)
+            logger.info("Request %s completed", name)
+            return f"{name} completed"
+
+        return _handler
+
+    tasks = [
+        asyncio.create_task(
+            shutdown_manager.handle_request(make_request_handler("req-1", 1.0))
+        ),
+        asyncio.create_task(
+            shutdown_manager.handle_request(make_request_handler("req-2", 2.0))
+        ),
+        asyncio.create_task(
+            shutdown_manager.handle_request(make_request_handler("req-3", 6.0))
+        ),
+    ]
+
+    # Let requests become in-flight before initiating shutdown.
+    await asyncio.sleep(0.3)
+
+    await shutdown_manager.shutdown()
+
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for idx, result in enumerate(results, start=1):
+        if isinstance(result, BaseException):
+            logger.info("Task %s ended with %s", idx, type(result).__name__)
+        else:
+            logger.info("Task %s result: %s", idx, result)
 
 
 if __name__ == "__main__":
