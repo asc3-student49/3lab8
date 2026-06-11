@@ -1,0 +1,17 @@
+[project]
+name = "dependency-lifecycle"
+version = "1.0.0"
+description = "Dependency lifecycle management and configuration"
+requires-python = ">=3.11"
+
+dependencies = [
+    "pydantic-ai>=1.77.0",
+    "pydantic-settings>=2.7.0",
+    "python-dotenv>=1.0.1",
+    "openai>=2.30.0",
+    # The HTTPClient in dependencies.py uses http2=True; httpx requires the
+    # h2 package for HTTP/2 support and pulls it in via this extra.
+    "httpx[http2]>=0.28.1",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
