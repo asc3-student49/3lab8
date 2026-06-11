@@ -75,7 +75,33 @@ class LifecycleManager:
         Raises:
             Exception: If any initialization fails
         """
-        # YOUR CODE HERE
+        if self._initialized:
+            return self.dependencies
+
+        database = cache = http = None
+
+        try:
+            database = DatabaseClient(self.settings)
+            await database.initialize()
+
+            cache = CacheClient(self.settings)
+            await cache.initialize()
+
+            http = HTTPClient(self.settings)
+            await http.initialize()
+
+            self.dependencies = ManagedDependencies(
+                settings=self.settings,
+                database=database,
+                cache=cache,
+                http=http,
+            )
+            self._initialized = True
+            return self.dependencies
+        except Exception as e:
+            logger.error(f"Initialization failed: {e}", exc_info=True)
+            await self._cleanup_dependencies(database, cache, http)
+            raise
 
     async def _cleanup_dependencies(
         self,
@@ -126,7 +152,39 @@ class LifecycleManager:
 
         Continues even if individual shutdowns fail.
         """
-        # YOUR CODE HERE
+        if not self._initialized or self._shutdown_in_progress:
+            return
+
+        self._shutdown_in_progress = True
+        errors = []
+
+        try:
+            if self.dependencies and self.dependencies.http:
+                try:
+                    await self.dependencies.http.close()
+                except Exception as e:
+                    errors.append(f"HTTP shutdown: {e}")
+
+            if self.dependencies and self.dependencies.cache:
+                try:
+                    await self.dependencies.cache.close()
+                except Exception as e:
+                    errors.append(f"Cache shutdown: {e}")
+
+            if self.dependencies and self.dependencies.database:
+                try:
+                    await self.dependencies.database.close()
+                except Exception as e:
+                    errors.append(f"Database shutdown: {e}")
+        finally:
+            self._initialized = False
+            self._shutdown_in_progress = False
+            self.dependencies = None
+
+            if errors:
+                logger.warning(f"Shutdown completed with errors: {errors}")
+            else:
+                logger.info("Shutdown completed cleanly")
 
     @asynccontextmanager
     async def lifespan(self) -> AsyncIterator[ManagedDependencies]:
